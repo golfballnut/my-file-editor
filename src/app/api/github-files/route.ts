@@ -1,3 +1,5 @@
+import { readFile } from 'fs/promises';
+import { join } from 'path';
 import { NextResponse } from 'next/server';
 
 // GitHub API response type
@@ -39,6 +41,32 @@ async function fetchFileContentAndCountTokens(
   return countTokens(content);
 }
 
+// Function to get local extra files
+async function getExtraFiles(): Promise<FileEntry[]> {
+  const extraFiles = [
+    {
+      path: 'src/config/settings.json',
+      content: JSON.stringify({
+        theme: "dark",
+        autosave: true
+      }, null, 2)
+    },
+    {
+      path: 'src/docs/README.md',
+      content: `# Project Documentation
+
+This is the project's documentation for extra configurations.`
+    }
+  ];
+
+  return extraFiles.map(file => ({
+    name: file.path.split('/').pop() || '',
+    path: file.path,
+    type: 'file' as const,
+    tokens: countTokens(file.content)
+  }));
+}
+
 async function fetchGitHubContents(
   owner: string,
   repo: string,
@@ -77,13 +105,12 @@ async function fetchGitHubContents(
       };
 
       if (file.type === 'dir') {
-        // Recursively fetch directory contents
+        // Always fetch directory contents
         console.log(`Fetching children for directory: ${file.path}`);
         entry.children = await fetchGitHubContents(owner, repo, file.path, branch);
         // Sum up tokens from children
         entry.tokens = entry.children.reduce((sum, child) => sum + (child.tokens || 0), 0);
       } else {
-        // Fetch and count tokens for files
         try {
           entry.tokens = await fetchFileContentAndCountTokens(owner, repo, file.path, branch);
           console.log(`Counted ${entry.tokens} tokens in ${file.path}`);
@@ -96,6 +123,12 @@ async function fetchGitHubContents(
       return entry;
     })
   );
+
+  // Add extra files at the root level
+  if (path === '') {
+    const extraFiles = await getExtraFiles();
+    entries.push(...extraFiles);
+  }
 
   return entries;
 }

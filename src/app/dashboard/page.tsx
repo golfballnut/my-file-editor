@@ -14,8 +14,79 @@ type FileTreeProps = {
   items: FileEntry[];
   onToggleSelect: (path: string, selected: boolean, entry: FileEntry) => void;
   selectedPaths: Set<string>;
+  expandedPaths: Set<string>;
+  onToggleExpand: (path: string) => void;
   level?: number;
 };
+
+function getLanguageFromPath(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'ts':
+    case 'tsx':
+      return 'tsx';
+    case 'js':
+    case 'jsx':
+      return 'javascript';
+    case 'css':
+      return 'css';
+    case 'html':
+      return 'html';
+    case 'json':
+      return 'json';
+    case 'md':
+      return 'markdown';
+    default:
+      return '';
+  }
+}
+
+function generateMarkdown(
+  selectedPaths: Set<string>,
+  files: FileEntry[],
+  findEntry: (path: string, items: FileEntry[]) => FileEntry | null,
+  totalTokens: number,
+  fileContents?: Record<string, string>
+): string {
+  const now = new Date().toLocaleString();
+  const lines: string[] = [
+    `# Selected Files (${now})`,
+    '',
+    `Total files: ${selectedPaths.size}  `,
+    `Total tokens: ${totalTokens.toLocaleString()}`,
+    '',
+    '| File Path | Type | Tokens |',
+    '|-----------|------|--------|',
+  ];
+
+  Array.from(selectedPaths).forEach(path => {
+    const entry = findEntry(path, files);
+    if (entry) {
+      const type = entry.type === 'directory' ? 'Directory' : 'File';
+      const tokens = entry.tokens?.toLocaleString() || '0';
+      lines.push(`| ${path} | ${type} | ${tokens} |`);
+    }
+  });
+
+  if (fileContents) {
+    lines.push('', '## File Contents', '');
+    Object.entries(fileContents).forEach(([path, content]) => {
+      if (content) {
+        const lang = getLanguageFromPath(path);
+        lines.push(
+          `### ${path}`,
+          '',
+          '```' + (lang ? lang : ''),
+          content.trim(),
+          '```',
+          ''
+        );
+      }
+    });
+  }
+
+  return lines.join('\n');
+}
 
 export default function DashboardPage() {
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -25,6 +96,8 @@ export default function DashboardPage() {
   const [totalTokens, setTotalTokens] = useState(0);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [prompt, setPrompt] = useState('');
+  const [includeContents, setIncludeContents] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   useEffect(() => {
     async function fetchFiles() {
@@ -113,7 +186,7 @@ export default function DashboardPage() {
     setTotalTokens(prev => selected ? prev + directoryTokens : prev - directoryTokens);
   }, [calculateDirectoryTokens]);
 
-  const toggleExpand = useCallback((path: string) => {
+  const handleToggleExpand = useCallback((path: string) => {
     setExpandedPaths(prev => {
       const next = new Set(prev);
       if (next.has(path)) {
@@ -125,7 +198,63 @@ export default function DashboardPage() {
     });
   }, []);
 
-  const FileTree = useCallback(({ items, onToggleSelect, selectedPaths, level = 0 }: FileTreeProps) => {
+  const handleExport = async (download = false) => {
+    setIsExporting(true);
+    try {
+      let md: string;
+      
+      if (includeContents) {
+        // Get only file paths (not directories)
+        const filePaths = Array.from(selectedPaths).filter(path => {
+          const entry = findEntry(path, files);
+          return entry?.type === 'file';
+        });
+
+        // Fetch contents
+        const response = await fetch('/api/file-contents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: filePaths }),
+        });
+
+        if (!response.ok) throw new Error('Failed to fetch file contents');
+        const contents = await response.json();
+
+        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens, contents);
+      } else {
+        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens);
+      }
+
+      if (download) {
+        const blob = new Blob([md], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `files-${new Date().toISOString().split('T')[0]}.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } else {
+        await navigator.clipboard.writeText(md);
+        alert('Markdown copied to clipboard!');
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Failed to export files');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const FileTree = useCallback(({ 
+    items, 
+    onToggleSelect, 
+    selectedPaths, 
+    expandedPaths,
+    onToggleExpand,
+    level = 0 
+  }: FileTreeProps) => {
     return (
       <ul className={`${level === 0 ? 'pl-0' : 'pl-4'} space-y-0.5`}>
         {items.map((item) => (
@@ -135,7 +264,7 @@ export default function DashboardPage() {
                 <button 
                   onClick={(e) => {
                     e.stopPropagation();
-                    toggleExpand(item.path);
+                    onToggleExpand(item.path);
                   }}
                   className="p-0.5 hover:bg-gray-200 rounded focus:outline-none"
                 >
@@ -181,6 +310,8 @@ export default function DashboardPage() {
                       items={item.children}
                       onToggleSelect={onToggleSelect}
                       selectedPaths={selectedPaths}
+                      expandedPaths={expandedPaths}
+                      onToggleExpand={onToggleExpand}
                       level={level + 1}
                     />
                   )}
@@ -203,7 +334,7 @@ export default function DashboardPage() {
         ))}
       </ul>
     );
-  }, [handleSelectDirectory, toggleExpand]);
+  }, []);
 
   if (loading) return (
     <div className="min-h-screen flex bg-gray-100">
@@ -284,6 +415,8 @@ export default function DashboardPage() {
                 items={files}
                 onToggleSelect={handleToggleSelect}
                 selectedPaths={selectedPaths}
+                expandedPaths={expandedPaths}
+                onToggleExpand={handleToggleExpand}
               />
             </div>
           </div>
@@ -314,7 +447,56 @@ export default function DashboardPage() {
             <div className="flex-1 overflow-auto">
               {selectedPaths.size > 0 && (
                 <div className="p-4 space-y-3">
-                  <h3 className="text-sm font-medium text-gray-500">Selected Files</h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-gray-500">Selected Files</h3>
+                    <div className="flex items-center gap-4">
+                      <label className="flex items-center gap-2 text-sm text-gray-600">
+                        <input
+                          type="checkbox"
+                          checked={includeContents}
+                          onChange={(e) => setIncludeContents(e.target.checked)}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        Include file contents
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleExport(false)}
+                          disabled={isExporting}
+                          className="px-3 py-1.5 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {isExporting ? (
+                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                            </svg>
+                          )}
+                          Copy Markdown
+                        </button>
+                        <button
+                          onClick={() => handleExport(true)}
+                          disabled={isExporting}
+                          className="px-3 py-1.5 bg-green-500 text-white text-sm rounded hover:bg-green-600 focus:ring-2 focus:ring-green-500 focus:ring-offset-2 flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {isExporting ? (
+                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                          )}
+                          Download .md
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     {Array.from(selectedPaths).map(path => {
                       const entry = findEntry(path, files);
@@ -332,6 +514,25 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Floating Token Counter */}
+      <div className="fixed bottom-4 right-4 bg-white/90 backdrop-blur border border-gray-300 rounded-lg shadow-lg p-3 text-sm space-y-1.5 z-50">
+        <div className="flex items-center gap-2 text-gray-700">
+          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div className="flex flex-col">
+            <div className="flex items-center gap-2">
+              <span>Selected files:</span>
+              <span className="font-medium">{selectedPaths.size}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span>Total tokens:</span>
+              <span className="font-medium">{totalTokens.toLocaleString()}</span>
             </div>
           </div>
         </div>
