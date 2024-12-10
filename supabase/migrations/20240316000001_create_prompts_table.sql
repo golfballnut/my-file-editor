@@ -5,13 +5,11 @@ create table if not exists prompts (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Add RLS policies
+-- Enable RLS
 alter table prompts enable row level security;
 
-create policy "Allow public read access"
-  on prompts for select
-  using (true);
-
-create policy "Allow authenticated insert"
-  on prompts for insert
-  with check (auth.role() = 'authenticated'); 
+-- Add RLS policies for development
+create policy "Allow all operations on prompts"
+  on prompts for all
+  using (true)
+  with check (true); 

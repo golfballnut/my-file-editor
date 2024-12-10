@@ -2,6 +2,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { NextResponse } from 'next/server';
 import { getExtraFiles } from '@/lib/extra-files';
+import { supabaseServer } from '@/lib/supabase-server';
 
 // GitHub API response type
 type GitHubApiFile = {
@@ -50,6 +51,40 @@ async function getLocalExtraFiles(): Promise<FileEntry[]> {
     type: 'file' as const,
     tokens: countTokens(file.content)
   }));
+}
+
+async function getSupabaseFiles(): Promise<FileEntry[]> {
+  // Fetch both files and prompts
+  const [filesResult, promptsResult] = await Promise.all([
+    supabaseServer.from('files').select('*'),
+    supabaseServer.from('prompts').select('*')
+  ]);
+
+  const entries: FileEntry[] = [];
+
+  // Add files from Supabase files table
+  if (!filesResult.error && filesResult.data) {
+    const fileEntries = filesResult.data.map(file => ({
+      name: file.path.split('/').pop() || file.path,
+      path: `supabase/${file.path}`,
+      type: 'file' as const,
+      tokens: countTokens(file.content)
+    }));
+    entries.push(...fileEntries);
+  }
+
+  // Add prompts as files
+  if (!promptsResult.error && promptsResult.data) {
+    const promptEntries = promptsResult.data.map(prompt => ({
+      name: prompt.filename,
+      path: `prompts/${prompt.filename}`,
+      type: 'file' as const,
+      tokens: countTokens(prompt.content)
+    }));
+    entries.push(...promptEntries);
+  }
+
+  return entries;
 }
 
 async function fetchGitHubContents(
@@ -109,10 +144,14 @@ async function fetchGitHubContents(
     })
   );
 
-  // Add extra files at the root level
+  // Add extra files and Supabase files at root level
   if (path === '') {
-    const extraEntries = await getLocalExtraFiles();
-    entries.push(...extraEntries);
+    const [extraEntries, supabaseEntries] = await Promise.all([
+      getLocalExtraFiles(),
+      getSupabaseFiles()
+    ]);
+    
+    entries.push(...extraEntries, ...supabaseEntries);
   }
 
   return entries;
