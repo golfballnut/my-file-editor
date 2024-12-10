@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { isExtraFile, getExtraFileContent } from '@/lib/extra-files';
+import { supabaseServer } from '@/lib/supabase-server';
 
 type RequestBody = {
   paths: string[];
@@ -8,20 +9,52 @@ type RequestBody = {
   branch?: string;
 };
 
+async function fetchPromptContent(path: string): Promise<string> {
+  const filename = path.replace(/^prompts\//, '');
+  const { data, error } = await supabaseServer
+    .from('prompts')
+    .select('content')
+    .eq('filename', filename)
+    .single();
+
+  if (error) {
+    console.error(`Failed to fetch prompt ${path}:`, error);
+    return '';
+  }
+
+  return data?.content || '';
+}
+
 async function fetchFileContent(
   owner: string,
   repo: string,
   path: string,
   branch: string = 'main'
 ): Promise<string> {
-  // Check for extra files first
+  console.log('Fetching content for:', path);
+
+  // Handle prompts from Supabase
+  if (path.startsWith('prompts/')) {
+    return fetchPromptContent(path);
+  }
+
+  // Handle extra files
   if (isExtraFile(path)) {
     return getExtraFileContent(path);
   }
 
-  // Otherwise fetch from GitHub
+  // Handle GitHub files
   const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
-  const response = await fetch(url);
+  const headers: Record<string, string> = {
+    'Accept': 'application/vnd.github.v3.raw',
+    'User-Agent': 'NextJS-File-Editor'
+  };
+  
+  if (process.env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+
+  const response = await fetch(url, { headers });
   
   if (!response.ok) {
     console.error(`Failed to fetch ${path}: ${response.statusText}`);
@@ -33,26 +66,27 @@ async function fetchFileContent(
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as RequestBody;
-    const { paths, owner, repo, branch } = body;
+    const { paths, owner: repoOwner, repo: repoName, branch: repoBranch } = 
+      await request.json() as RequestBody;
 
-    const repoOwner = owner || process.env.GITHUB_OWNER;
-    const repoName = repo || process.env.GITHUB_REPO;
-    const repoBranch = branch || 'main';
-
-    if (!repoOwner || !repoName) {
+    if (!paths || !Array.isArray(paths)) {
       return NextResponse.json(
-        { error: 'Missing repository information' },
+        { error: 'Paths array is required' },
         { status: 400 }
       );
     }
 
     const contents: Record<string, string> = {};
-    
+
     await Promise.all(
       paths.map(async (path) => {
         try {
-          contents[path] = await fetchFileContent(repoOwner, repoName, path, repoBranch);
+          contents[path] = await fetchFileContent(
+            repoOwner || process.env.GITHUB_OWNER!,
+            repoName || process.env.GITHUB_REPO!,
+            path,
+            repoBranch
+          );
         } catch (error) {
           console.error(`Error fetching ${path}:`, error);
           contents[path] = '';
@@ -61,7 +95,6 @@ export async function POST(request: Request) {
     );
 
     return NextResponse.json(contents);
-
   } catch (error) {
     console.error('Error processing request:', error);
     return NextResponse.json(
