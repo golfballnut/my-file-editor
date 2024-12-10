@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { NextResponse } from 'next/server';
+import { extraFiles, getExtraFileContent } from '@/lib/extra-files';
 
 // GitHub API response type
 type GitHubApiFile = {
@@ -43,25 +44,9 @@ async function fetchFileContentAndCountTokens(
 
 // Function to get local extra files
 async function getExtraFiles(): Promise<FileEntry[]> {
-  const extraFiles = [
-    {
-      path: 'src/config/settings.json',
-      content: JSON.stringify({
-        theme: "dark",
-        autosave: true
-      }, null, 2)
-    },
-    {
-      path: 'src/docs/README.md',
-      content: `# Project Documentation
-
-This is the project's documentation for extra configurations.`
-    }
-  ];
-
-  return extraFiles.map(file => ({
-    name: file.path.split('/').pop() || '',
-    path: file.path,
+  return Object.entries(extraFiles).map(([path, file]) => ({
+    name: path.split('/').pop() || '',
+    path,
     type: 'file' as const,
     tokens: countTokens(file.content)
   }));
@@ -126,8 +111,8 @@ async function fetchGitHubContents(
 
   // Add extra files at the root level
   if (path === '') {
-    const extraFiles = await getExtraFiles();
-    entries.push(...extraFiles);
+    const extraEntries = await getExtraFiles();
+    entries.push(...extraEntries);
   }
 
   return entries;

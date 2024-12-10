@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { isExtraFile, getExtraFileContent } from '@/lib/extra-files';
 
 type RequestBody = {
   paths: string[];
@@ -13,6 +14,12 @@ async function fetchFileContent(
   path: string,
   branch: string = 'main'
 ): Promise<string> {
+  // Check for extra files first
+  if (isExtraFile(path)) {
+    return getExtraFileContent(path) || '';
+  }
+
+  // Otherwise fetch from GitHub
   const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
   const response = await fetch(url);
   
