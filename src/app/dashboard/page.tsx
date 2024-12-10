@@ -98,6 +98,9 @@ export default function DashboardPage() {
   const [prompt, setPrompt] = useState('');
   const [includeContents, setIncludeContents] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newFilePath, setNewFilePath] = useState('');
+  const [newFileContent, setNewFileContent] = useState('');
 
   useEffect(() => {
     async function fetchFiles() {
@@ -246,6 +249,63 @@ export default function DashboardPage() {
       setIsExporting(false);
     }
   };
+
+  async function handleCreateFile() {
+    if (!newFilePath.trim()) {
+      alert('File path cannot be empty');
+      return;
+    }
+
+    try {
+      // If it's a prompt file, use the prompt API
+      if (newFilePath.endsWith('_prompt.md')) {
+        const response = await fetch('/api/upload-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: newFilePath,
+            content: newFileContent
+          })
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || 'Failed to create prompt');
+        }
+
+        const data = await response.json();
+        alert(`Prompt ${data.filename} created successfully!`);
+      } else {
+        // Use regular file storage for non-prompts
+        const response = await fetch('/api/store-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: newFilePath.trim(),
+            content: newFileContent
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to create file');
+        }
+
+        const data = await response.json();
+        alert(`File ${data.path} created successfully!`);
+      }
+      
+      // Reset form
+      setNewFilePath('');
+      setNewFileContent('');
+      setShowCreateForm(false);
+      
+      // Refresh files
+      await fetchFiles();
+    } catch (error) {
+      console.error('Error creating file:', error);
+      alert(error instanceof Error ? error.message : 'Failed to create file');
+    }
+  }
 
   const FileTree = useCallback(({ 
     items, 
@@ -397,20 +457,64 @@ export default function DashboardPage() {
           <div className="w-64 bg-gray-50 border-r border-gray-300 overflow-auto">
             <div className="p-4">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Explorer</h2>
-                <div className="flex space-x-2">
-                  <button className="p-1 hover:bg-gray-200 rounded">
-                    <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                  </button>
-                  <button className="p-1 hover:bg-gray-200 rounded">
-                    <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  </button>
-                </div>
+                <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  Explorer
+                </h2>
+                <button
+                  onClick={() => setShowCreateForm(true)}
+                  className="p-1 hover:bg-gray-200 rounded text-gray-600"
+                  title="New File"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                </button>
               </div>
+              
+              {/* Create File Form */}
+              {showCreateForm && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+                  <div className="bg-white rounded-lg p-6 w-96 space-y-4">
+                    <h3 className="text-lg font-medium text-gray-900">Create New File</h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">File Path</label>
+                        <input
+                          type="text"
+                          value={newFilePath}
+                          onChange={(e) => setNewFilePath(e.target.value)}
+                          placeholder="e.g., src/prompts/new-prompt.txt"
+                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">Content</label>
+                        <textarea
+                          value={newFileContent}
+                          onChange={(e) => setNewFileContent(e.target.value)}
+                          rows={6}
+                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-5 flex justify-end gap-3">
+                      <button
+                        onClick={() => setShowCreateForm(false)}
+                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleCreateFile}
+                        className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
+                      >
+                        Create File
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
               <FileTree
                 items={files}
                 onToggleSelect={handleToggleSelect}
