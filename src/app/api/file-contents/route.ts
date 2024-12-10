@@ -16,7 +16,7 @@ async function fetchFileContent(
 ): Promise<string> {
   // Check for extra files first
   if (isExtraFile(path)) {
-    return getExtraFileContent(path) || '';
+    return getExtraFileContent(path);
   }
 
   // Otherwise fetch from GitHub
