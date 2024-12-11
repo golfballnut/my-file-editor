@@ -54,10 +54,26 @@ function generateMarkdown(
   files: FileEntry[],
   findEntry: (path: string, items: FileEntry[]) => FileEntry | null,
   totalTokens: number,
-  fileContents?: Record<string, string>
+  fileContents?: Record<string, string>,
+  userPrompt?: string
 ): string {
   const now = new Date().toLocaleString();
-  const lines: string[] = [
+  const lines: string[] = [];
+
+  // Add user's prompt text first if provided
+  if (userPrompt?.trim()) {
+    lines.push(
+      '# Prompt',
+      '',
+      userPrompt.trim(),
+      '',
+      '---',
+      ''
+    );
+  }
+
+  // Add file statistics
+  lines.push(
     `# Selected Files (${now})`,
     '',
     `Total files: ${selectedPaths.size}  `,
@@ -65,8 +81,9 @@ function generateMarkdown(
     '',
     '| File Path | Type | Tokens |',
     '|-----------|------|--------|',
-  ];
+  );
 
+  // Add file table
   Array.from(selectedPaths).forEach(path => {
     const entry = findEntry(path, files);
     if (entry) {
@@ -76,9 +93,35 @@ function generateMarkdown(
     }
   });
 
+  // Add file contents if provided
   if (fileContents) {
     lines.push('', '## File Contents', '');
-    Object.entries(fileContents).forEach(([path, content]) => {
+
+    // First add Supabase prompts
+    const promptPaths = Array.from(selectedPaths)
+      .filter(path => path.startsWith('prompts/') || path.startsWith('supabase/'));
+
+    promptPaths.forEach(path => {
+      const content = fileContents[path];
+      if (content) {
+        const lang = getLanguageFromPath(path);
+        lines.push(
+          `### ${path}`,
+          '',
+          '```' + (lang ? lang : ''),
+          content.trim(),
+          '```',
+          ''
+        );
+      }
+    });
+
+    // Then add other files
+    const otherPaths = Array.from(selectedPaths)
+      .filter(path => !path.startsWith('prompts/') && !path.startsWith('supabase/'));
+
+    otherPaths.forEach(path => {
+      const content = fileContents[path];
       if (content) {
         const lang = getLanguageFromPath(path);
         lines.push(
@@ -260,9 +303,9 @@ export default function DashboardPage() {
         if (!response.ok) throw new Error('Failed to fetch file contents');
         const contents = await response.json();
 
-        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens, contents);
+        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens, contents, prompt);
       } else {
-        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens);
+        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens, undefined, prompt);
       }
 
       if (download) {
