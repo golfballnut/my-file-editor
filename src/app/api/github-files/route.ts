@@ -160,14 +160,14 @@ async function fetchGitHubContents(
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const owner = searchParams.get('owner') || process.env.GITHUB_OWNER;
-    const repo = searchParams.get('repo') || process.env.GITHUB_REPO;
+    const owner = searchParams.get('owner')?.trim() || process.env.GITHUB_OWNER;
+    const repo = searchParams.get('repo')?.trim() || process.env.GITHUB_REPO;
     const path = searchParams.get('path') || '';
     const branch = searchParams.get('branch') || 'main';
 
     if (!owner || !repo) {
       return NextResponse.json(
-        { error: 'Missing repository information' },
+        { error: 'Repository owner and name are required' },
         { status: 400 }
       );
     }
@@ -177,7 +177,6 @@ export async function GET(request: Request) {
     console.log('Fetch complete');
     
     return NextResponse.json(files);
-
   } catch (error) {
     console.error('Error fetching GitHub files:', error);
     return NextResponse.json(
