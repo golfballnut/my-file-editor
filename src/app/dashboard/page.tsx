@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { supabaseClient } from '@/lib/supabase-client';
 
 type FileEntry = {
   name: string;
@@ -516,7 +515,7 @@ export default function DashboardPage() {
         ))}
       </ul>
     );
-  }, []);
+  }, [handleSelectDirectory]);
 
   // Add fetchPrompts function
   const fetchPrompts = useCallback(async () => {

@@ -1,0 +1,45 @@
+# Build stage
+FROM node:18-alpine AS builder
+
+# Install dependencies
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+
+# Copy source
+COPY . .
+
+# Set build-time environment variables
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG SUPABASE_SERVICE_ROLE_KEY
+ARG GITHUB_OWNER
+ARG GITHUB_REPO
+ARG GITHUB_TOKEN
+
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY
+ENV GITHUB_OWNER=$GITHUB_OWNER
+ENV GITHUB_REPO=$GITHUB_REPO
+ENV GITHUB_TOKEN=$GITHUB_TOKEN
+
+# Build the app
+RUN npm run build
+
+# Production stage
+FROM node:18-alpine AS runner
+WORKDIR /app
+
+# Copy only necessary files
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/package.json ./package.json
+
+# Runtime env vars
+ENV NODE_ENV=production
+
+# Expose port and start app
+EXPOSE 3000
+CMD ["npm", "start"] 

@@ -29,8 +29,14 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# env files (can opt-in for committing if needed)
+# env files
 .env*
+.env.*
+!.env.example
+
+# docker files
+Dockerfile
+docker-compose.yml
 
 # vercel
 .vercel
