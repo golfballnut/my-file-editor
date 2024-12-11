@@ -142,7 +142,7 @@ export default function DashboardPage() {
   console.log('DashboardPage is rendering...');
 
   const [files, setFiles] = useState<FileEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [totalTokens, setTotalTokens] = useState(0);
@@ -158,45 +158,52 @@ export default function DashboardPage() {
   const [newPromptContent, setNewPromptContent] = useState('');
   const [promptsList, setPromptsList] = useState<Prompt[]>([]);
   const [promptsError, setPromptsError] = useState<string | null>(null);
+  const [repoOwner, setRepoOwner] = useState(process.env.NEXT_PUBLIC_GITHUB_OWNER || '');
+  const [repoName, setRepoName] = useState(process.env.NEXT_PUBLIC_GITHUB_REPO || '');
+  const [isLoadingRepo, setIsLoadingRepo] = useState(false);
+  const [publicRepos, setPublicRepos] = useState<Array<{name: string, description: string}>>([]);
+  const [isRepoLoading, setIsRepoLoading] = useState(false);
 
-  const fetchFiles = useCallback(async () => {
-    console.log('Fetching files...');
+  // Define handleLoadRepository first
+  const handleLoadRepository = useCallback(async () => {
+    if (!repoOwner.trim() || !repoName.trim()) {
+      setError('Repository owner and name are required');
+      return;
+    }
+
+    setLoading(true);
+    setIsLoadingRepo(true);
+    setError(null);
+    
     try {
-      const response = await fetch('/api/github-files');
-      console.log('GitHub files response:', response.status);
+      const response = await fetch(
+        `/api/github-files?owner=${encodeURIComponent(repoOwner.trim())}&repo=${encodeURIComponent(repoName.trim())}`
+      );
       
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Failed to fetch files:', errorText);
-        throw new Error('Failed to fetch files');
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to fetch repository');
       }
       
       const data = await response.json();
-      
-      if (!data || data.length === 0) {
-        console.warn('No files received from /api/github-files:', data);
-      } else {
-        console.log('Received files data:', data);
-      }
-
       setFiles(data);
-      console.log('Setting loading to false');
-      setLoading(false);
     } catch (err) {
       console.error('Error fetching files:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load file structure');
+      setError(err instanceof Error ? err.message : 'Failed to load repository');
+    } finally {
+      setIsLoadingRepo(false);
       setLoading(false);
     }
-  }, []);
+  }, [repoOwner, repoName]);
 
+  // Then use it in useEffect
   useEffect(() => {
-    console.log('Initial useEffect running...');
-    console.log('Environment:', {
-      GITHUB_OWNER: process.env.NEXT_PUBLIC_GITHUB_OWNER,
-      GITHUB_REPO: process.env.NEXT_PUBLIC_GITHUB_REPO
-    });
-    fetchFiles();
-  }, [fetchFiles]);
+    if (process.env.NEXT_PUBLIC_GITHUB_OWNER && process.env.NEXT_PUBLIC_GITHUB_REPO) {
+      setRepoOwner(process.env.NEXT_PUBLIC_GITHUB_OWNER);
+      setRepoName(process.env.NEXT_PUBLIC_GITHUB_REPO);
+      handleLoadRepository();
+    }
+  }, [handleLoadRepository]);
 
   // Calculate total tokens for a directory and its children
   const calculateDirectoryTokens = useCallback((entry: FileEntry): number => {
@@ -329,7 +336,7 @@ export default function DashboardPage() {
     }
   };
 
-  async function handleCreateFile() {
+  const handleCreateFile = async () => {
     if (!newFilePath.trim()) {
       alert('File path cannot be empty');
       return;
@@ -373,18 +380,18 @@ export default function DashboardPage() {
         alert(`File ${data.path} created successfully!`);
       }
       
+      // Refresh files using handleLoadRepository
+      await handleLoadRepository();
+      
       // Reset form
+      setShowCreateForm(false);
       setNewFilePath('');
       setNewFileContent('');
-      setShowCreateForm(false);
-      
-      // Refresh files
-      await fetchFiles();
     } catch (error) {
       console.error('Error creating file:', error);
       alert(error instanceof Error ? error.message : 'Failed to create file');
     }
-  }
+  };
 
   async function handleCreatePrompt() {
     if (!newPromptName.trim() || !newPromptContent.trim()) {
@@ -537,6 +544,47 @@ export default function DashboardPage() {
     fetchPrompts();
   }, [fetchPrompts]);
 
+  // Add fetchPublicRepos function
+  const fetchPublicRepos = useCallback(async () => {
+    if (!repoOwner.trim()) {
+      setError('Repository owner is required');
+      return;
+    }
+
+    setIsRepoLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(
+        `https://api.github.com/users/${repoOwner.trim()}/repos?per_page=100`,
+        {
+          headers: {
+            'Accept': 'application/vnd.github.v3+json',
+            ...(process.env.NEXT_PUBLIC_GITHUB_TOKEN && {
+              'Authorization': `Bearer ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`
+            })
+          }
+        }
+      );
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch repositories for ${repoOwner.trim()}`);
+      }
+      
+      const data = await response.json();
+      setPublicRepos(data.map((repo: any) => ({
+        name: repo.name,
+        description: repo.description
+      })));
+    } catch (err) {
+      console.error('Error fetching repos:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load repositories');
+      setPublicRepos([]);
+    } finally {
+      setIsRepoLoading(false);
+    }
+  }, [repoOwner]);
+
   if (loading) {
     console.log('Loading is true, showing loading state...');
     return (
@@ -608,6 +656,99 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col">
+        {/* Repository Selector */}
+        <div className="bg-white border-b border-gray-200 p-4">
+          <div className="max-w-screen-xl mx-auto">
+            <div className="flex flex-col gap-4">
+              {/* Owner input and repo loader */}
+              <div className="flex items-end gap-4">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Repository Owner
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={repoOwner}
+                      onChange={(e) => setRepoOwner(e.target.value)}
+                      placeholder="e.g., golfballnut"
+                      className="flex-1 px-3 py-1.5 text-sm border rounded-md focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={fetchPublicRepos}
+                      disabled={isRepoLoading || !repoOwner.trim()}
+                      className={`px-3 py-1.5 text-sm font-medium rounded-md flex items-center gap-2
+                        ${isRepoLoading || !repoOwner.trim()
+                          ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                          : 'bg-blue-500 text-white hover:bg-blue-600'
+                        }`}
+                    >
+                      {isRepoLoading ? (
+                        <>
+                          <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                          Loading...
+                        </>
+                      ) : 'Load Repos'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Repository selector */}
+              {publicRepos.length > 0 && (
+                <div className="flex items-end gap-4">
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Repository
+                    </label>
+                    <select
+                      value={repoName}
+                      onChange={(e) => setRepoName(e.target.value)}
+                      className="w-full px-3 py-1.5 text-sm border rounded-md focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">Select a repository</option>
+                      {publicRepos.map((repo) => (
+                        <option key={repo.name} value={repo.name}>
+                          {repo.name} {repo.description ? `- ${repo.description}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    onClick={handleLoadRepository}
+                    disabled={isLoadingRepo || !repoOwner.trim() || !repoName.trim()}
+                    className={`px-4 py-1.5 text-sm font-medium rounded-md flex items-center gap-2
+                      ${isLoadingRepo || !repoOwner.trim() || !repoName.trim()
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        : 'bg-blue-500 text-white hover:bg-blue-600'
+                      }`}
+                  >
+                    {isLoadingRepo ? (
+                      <>
+                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Loading...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Load Repository
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Title Bar */}
         <div className="h-10 bg-gray-200 border-b border-gray-300 flex items-center px-4 text-sm text-gray-800 shadow-sm">
           <span>File Explorer</span>
@@ -619,6 +760,7 @@ export default function DashboardPage() {
           </button>
         </div>
 
+        {/* Main Area with Loading/Error States */}
         {/* Main Area */}
         <div className="flex-1 flex overflow-hidden">
           {/* File Explorer */}
