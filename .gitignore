@@ -37,6 +37,8 @@ yarn-error.log*
 # docker files
 Dockerfile
 docker-compose.yml
+!Dockerfile.example
+!docker-compose.example.yml
 
 # vercel
 .vercel
@@ -44,3 +46,7 @@ docker-compose.yml
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Supabase
+.branches
+.temp
