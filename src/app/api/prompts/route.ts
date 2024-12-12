@@ -5,7 +5,7 @@ export async function GET() {
   try {
     const { data, error } = await supabaseServer
       .from('prompts')
-      .select('id,filename,created_at')
+      .select('id, filename, content, created_at, prompt')
       .order('created_at', { ascending: false });
 
     if (error) {

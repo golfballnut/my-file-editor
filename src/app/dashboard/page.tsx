@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 
 type FileEntry = {
   name: string;
@@ -24,6 +24,7 @@ type Prompt = {
   filename: string;
   content: string;
   created_at: string;
+  prompt?: 'prompt' | 'prd' | 'instructions' | 'example';
 };
 
 function getLanguageFromPath(path: string): string {
@@ -84,6 +85,71 @@ function generateMarkdown(
   return markdown;
 }
 
+// Add XML generation function
+function generateXMLPrompt(
+  selectedPaths: Set<string>,
+  files: FileEntry[],
+  fileContents: Record<string, string> | undefined,
+  promptsList: Prompt[],
+  userPrompt: string
+): string {
+  // Create a map of filenames to their prompt types
+  const promptMap = new Map<string, string>();
+  promptsList.forEach(p => {
+    if (p.prompt) {
+      promptMap.set(p.filename, p.prompt);
+    }
+  });
+
+  // Categorize selected paths
+  const sections = {
+    prompt: [] as string[],
+    prd: [] as string[],
+    instructions: [] as string[],
+    example: [] as string[],
+    codebase: [] as string[]
+  };
+
+  // Sort files into sections
+  Array.from(selectedPaths).forEach(path => {
+    const filename = path.split('/').pop() || path;
+    const category = promptMap.get(filename);
+    
+    if (category && category in sections) {
+      sections[category as keyof typeof sections].push(path);
+    } else {
+      sections.codebase.push(path);
+    }
+  });
+
+  // Generate XML for files in a section
+  function filesToXML(paths: string[]): string {
+    return paths.map(path => {
+      const content = fileContents?.[path] || '';
+      const ext = path.split('.').pop() || '';
+      return `  <file name="${path}" type="${ext}">\n    ${content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}\n  </file>`;
+    }).join('\n');
+  }
+
+  // Build the final XML
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<prompt>
+  <purpose>${userPrompt.trim().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</purpose>
+  <instructions>
+${filesToXML(sections.instructions)}
+  </instructions>
+  <prd>
+${filesToXML(sections.prd)}
+  </prd>
+  <codebase>
+${filesToXML(sections.codebase)}
+  </codebase>
+  <examples>
+${filesToXML(sections.example)}
+  </examples>
+</prompt>`;
+}
+
 export default function DashboardPage() {
   console.log('DashboardPage is rendering...');
 
@@ -104,11 +170,44 @@ export default function DashboardPage() {
   const [newPromptContent, setNewPromptContent] = useState('');
   const [promptsList, setPromptsList] = useState<Prompt[]>([]);
   const [promptsError, setPromptsError] = useState<string | null>(null);
-  const [repoOwner, setRepoOwner] = useState(process.env.NEXT_PUBLIC_GITHUB_OWNER || '');
+  const [repoOwner, setRepoOwner] = useState('golfballnut');
   const [repoName, setRepoName] = useState(process.env.NEXT_PUBLIC_GITHUB_REPO || '');
   const [isLoadingRepo, setIsLoadingRepo] = useState(false);
   const [publicRepos, setPublicRepos] = useState<Array<{name: string, description: string}>>([]);
   const [isRepoLoading, setIsRepoLoading] = useState(false);
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(250);
+  const isResizingRef = useRef(false);
+  const startXRef = useRef(0);
+
+  // Add resize effect
+  useEffect(() => {
+    function handleMouseMove(e: MouseEvent) {
+      if (!isResizingRef.current) return;
+      const dx = e.clientX - startXRef.current;
+      startXRef.current = e.clientX;
+      setSidebarWidth((prev) => Math.max(200, Math.min(600, prev + dx)));
+    }
+
+    function handleMouseUp() {
+      isResizingRef.current = false;
+    }
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  // Add resize handler
+  function handleMouseDownResize(e: React.MouseEvent) {
+    e.preventDefault();
+    isResizingRef.current = true;
+    startXRef.current = e.clientX;
+  }
 
   // Define handleLoadRepository first
   const handleLoadRepository = useCallback(async () => {
@@ -195,31 +294,94 @@ export default function DashboardPage() {
     });
   }, [calculateDirectoryTokens]);
 
-  // Handle selecting all files in a directory
-  const handleSelectDirectory = useCallback((item: FileEntry, selected: boolean) => {
-    setSelectedPaths(prev => {
-      const next = new Set(prev);
-      
-      function addPaths(entry: FileEntry) {
-        if (selected) {
-          next.add(entry.path);
-        } else {
-          next.delete(entry.path);
-        }
-        
-        if (entry.children) {
-          entry.children.forEach(addPaths);
-        }
+  // Add helper function for token calculation
+  function calculateTokens(paths: Set<string>, files: FileEntry[], findEntry: (path: string, items: FileEntry[]) => FileEntry | null): number {
+    let sum = 0;
+    paths.forEach(path => {
+      const entry = findEntry(path, files);
+      if (entry?.type === 'file') {
+        sum += entry.tokens ?? 0;
       }
-      
-      addPaths(item);
+    });
+    return sum;
+  }
+
+  // Add useEffect for token calculation
+  useEffect(() => {
+    // Recalculate tokens whenever selectedPaths changes
+    let sum = 0;
+    selectedPaths.forEach(path => {
+      const entry = findEntry(path, files);
+      // Only count tokens for files
+      if (entry?.type === 'file') {
+        sum += entry.tokens ?? 0;
+      }
+    });
+    setTotalTokens(sum);
+  }, [selectedPaths, files, findEntry]);
+
+  // Update handleSelectDirectory to remove manual token calculation
+  const handleSelectDirectory = useCallback((item: FileEntry, selected: boolean) => {
+    // First expand the directory
+    setExpandedPaths(prev => {
+      const next = new Set(prev);
+      if (selected) {
+        next.add(item.path);
+        // Also expand all subdirectories
+        function expandSubdirs(entry: FileEntry) {
+          if (entry.type === 'directory' && entry.children) {
+            next.add(entry.path);
+            entry.children.forEach(expandSubdirs);
+          }
+        }
+        expandSubdirs(item);
+      }
       return next;
     });
 
-    // Update total tokens for the directory
-    const directoryTokens = calculateDirectoryTokens(item);
-    setTotalTokens(prev => selected ? prev + directoryTokens : prev - directoryTokens);
-  }, [calculateDirectoryTokens]);
+    // Then update selections
+    setSelectedPaths(prev => {
+      const next = new Set(prev);
+      
+      function processEntry(entry: FileEntry) {
+        if (entry.type === 'directory') {
+          // Add/remove directory itself for visual tracking
+          if (selected) {
+            next.add(entry.path);
+          } else {
+            next.delete(entry.path);
+          }
+          
+          // Process children
+          if (entry.children) {
+            entry.children.forEach(processEntry);
+          }
+        } else if (entry.type === 'file') {
+          // Skip excluded file types
+          const ext = entry.name.split('.').pop()?.toLowerCase();
+          const excludedExtensions = ['.ico', '.woff', '.woff2', '.ttf', '.png', '.svg', '.eot'];
+          if (ext && excludedExtensions.includes(`.${ext}`)) {
+            return;
+          }
+          
+          if (selected) {
+            next.add(entry.path);
+          } else {
+            next.delete(entry.path);
+          }
+        }
+      }
+
+      processEntry(item);
+      return next;
+    });
+  }, [files, findEntry]);
+
+  // Update the selected files display to only show files
+  const selectedFilePaths = Array.from(selectedPaths).filter(path => {
+    const entry = findEntry(path, files);
+    return entry?.type === 'file';
+  });
 
   const handleToggleExpand = useCallback((path: string) => {
     setExpandedPaths(prev => {
@@ -233,58 +395,50 @@ export default function DashboardPage() {
     });
   }, []);
 
-  const handleExport = async (download = false) => {
-    if (selectedPaths.size === 0) return;
-
+  // Update handleExport to use XML
+  const handleExport = useCallback(async (download: boolean) => {
+    setIsExporting(true);
     try {
-      setIsExporting(true);
-      const filePaths = Array.from(selectedPaths);
-      let fileContents = {};
-
+      let contents: Record<string, string> = {};
+      
       if (includeContents) {
         const response = await fetch('/api/file-contents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            paths: filePaths,
-            owner: repoOwner.trim(),
-            repo: repoName.trim()
-          })
+          body: JSON.stringify({ paths: Array.from(selectedPaths) })
         });
-
+        
         if (!response.ok) throw new Error('Failed to fetch file contents');
-        fileContents = await response.json();
+        contents = await response.json();
       }
 
-      const markdown = generateMarkdown(
+      const xml = generateXMLPrompt(
         selectedPaths,
         files,
-        findEntry,
-        totalTokens,
-        includeContents ? fileContents : undefined,
+        contents,
+        promptsList,
         prompt
       );
 
       if (download) {
-        const blob = new Blob([markdown], { type: 'text/markdown' });
+        const blob = new Blob([xml], { type: 'application/xml' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `code-review-${new Date().toISOString().split('T')[0]}.md`;
+        a.download = `prompt-${new Date().toISOString().split('T')[0]}.xml`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } else {
-        await navigator.clipboard.writeText(markdown);
+        await navigator.clipboard.writeText(xml);
       }
     } catch (error) {
-      console.error('Error exporting:', error);
-      setError(error instanceof Error ? error.message : 'Failed to export');
+      console.error('Export error:', error);
     } finally {
       setIsExporting(false);
     }
-  };
+  }, [selectedPaths, files, includeContents, promptsList, prompt]);
 
   const handleCreateFile = async () => {
     if (!newFilePath.trim()) {
@@ -573,6 +727,82 @@ export default function DashboardPage() {
     }
   };
 
+  // Add handler for prompt selection
+  const handlePromptSelect = useCallback(async (promptId: string) => {
+    try {
+      const response = await fetch(`/api/get-prompt?id=${promptId}`);
+      if (!response.ok) throw new Error('Failed to fetch prompt');
+      
+      const prompt = await response.json();
+      setPrompt(prompt.content);
+      setSelectedPromptId(promptId);
+    } catch (error) {
+      console.error('Error selecting prompt:', error);
+    }
+  }, []);
+
+  // Add section rendering component
+  const PromptSection = ({ 
+    title, 
+    prompts, 
+    selectedId, 
+    onSelect,
+    onNewPrompt 
+  }: { 
+    title: string;
+    prompts: Prompt[];
+    selectedId: string | null;
+    onSelect: (id: string) => void;
+    onNewPrompt?: () => void;
+  }) => (
+    <div className="mt-4 border-t border-gray-200 pt-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          {title}
+        </h2>
+        {onNewPrompt && (
+          <button
+            onClick={onNewPrompt}
+            className="p-1 hover:bg-gray-200 rounded text-gray-600"
+            title={`New ${title}`}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {prompts.length === 0 ? (
+        <div className="text-sm text-gray-500 italic">
+          No {title.toLowerCase()} created yet
+        </div>
+      ) : (
+        <ul className="space-y-1">
+          {prompts.map((prompt) => (
+            <li 
+              key={prompt.id}
+              onClick={() => onSelect(prompt.id)}
+              className={`group flex items-center gap-2 text-sm p-2 rounded cursor-pointer
+                ${selectedId === prompt.id ? 'bg-blue-50' : 'hover:bg-gray-100'}`}
+            >
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" 
+                />
+              </svg>
+              <span className={`text-gray-700 ${selectedId === prompt.id ? 'font-medium' : ''}`}>
+                {prompt.filename}
+              </span>
+              <span className="text-xs text-gray-400 ml-auto">
+                {new Date(prompt.created_at).toLocaleDateString()}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+
   if (loading) {
     console.log('Loading is true, showing loading state...');
     return (
@@ -642,12 +872,16 @@ export default function DashboardPage() {
         </button>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col">
-        {/* Repository Selector */}
-        <div className="bg-white border-b border-gray-200 p-4">
-          <div className="max-w-screen-xl mx-auto">
-            <div className="flex flex-col gap-4">
+      {/* Main flex container */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar with dynamic width */}
+        <div 
+          style={{ width: sidebarWidth }} 
+          className="bg-gray-50 border-r border-gray-300 overflow-auto flex-shrink-0"
+        >
+          {/* Repository Selector */}
+          <div className="bg-white border-b border-gray-200 p-4">
+            <div className="space-y-4">
               {/* Owner input and repo loader */}
               <div className="flex items-end gap-4">
                 <div className="flex-1">
@@ -735,242 +969,186 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
-        </div>
 
-        {/* Title Bar */}
-        <div className="h-10 bg-gray-200 border-b border-gray-300 flex items-center px-4 text-sm text-gray-800 shadow-sm">
-          <span>File Explorer</span>
-          <div className="flex-1" />
-          <button className="p-1 hover:bg-gray-300 rounded">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Main Area with Loading/Error States */}
-        {/* Main Area */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* File Explorer */}
-          <div className="w-64 bg-gray-50 border-r border-gray-300 overflow-auto">
-            <div className="p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  Explorer
-                </h2>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setShowPromptModal(true)}
-                    className="p-1 hover:bg-gray-200 rounded text-gray-600"
-                    title="New Prompt"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => setShowCreateForm(true)}
-                    className="p-1 hover:bg-gray-200 rounded text-gray-600"
-                    title="New File"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              
-              {/* Create File Form */}
-              {showCreateForm && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-                  <div className="bg-white rounded-lg p-6 w-96 space-y-4">
-                    <h3 className="text-lg font-medium text-gray-900">Create New File</h3>
-                    <div className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700">File Path</label>
-                        <input
-                          type="text"
-                          value={newFilePath}
-                          onChange={(e) => setNewFilePath(e.target.value)}
-                          placeholder="e.g., src/prompts/new-prompt.txt"
-                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700">Content</label>
-                        <textarea
-                          value={newFileContent}
-                          onChange={(e) => setNewFileContent(e.target.value)}
-                          rows={6}
-                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                        />
-                      </div>
-                    </div>
-                    <div className="mt-5 flex justify-end gap-3">
-                      <button
-                        onClick={() => setShowCreateForm(false)}
-                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={handleCreateFile}
-                        className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
-                      >
-                        Create File
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-              
-              <FileTree
-                items={files}
-                onToggleSelect={handleToggleSelect}
-                selectedPaths={selectedPaths}
-                expandedPaths={expandedPaths}
-                onToggleExpand={handleToggleExpand}
-              />
-
-              {/* Prompts List */}
-              <div className="mt-8 border-t border-gray-200 pt-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Active Prompts
-                  </h2>
-                  <button
-                    onClick={() => setShowPromptModal(true)}
-                    className="p-1 hover:bg-gray-200 rounded text-gray-600"
-                    title="New Prompt"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                  </button>
-                </div>
-
-                {promptsError ? (
-                  <div className="text-sm text-red-500">
-                    Error loading prompts: {promptsError}
-                  </div>
-                ) : promptsList.length === 0 ? (
-                  <div className="text-sm text-gray-500 italic">
-                    No prompts created yet
-                  </div>
-                ) : (
-                  <ul className="space-y-1">
-                    {promptsList.map((prompt) => (
-                      <li key={prompt.id} className="group flex items-center gap-2 text-sm">
-                        <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                        <span className="text-gray-700">{prompt.filename}</span>
-                        <span className="text-xs text-gray-400 ml-auto">
-                          {new Date(prompt.created_at).toLocaleDateString()}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Main Content Area */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Prompt Area */}
-            <div className="border-b border-gray-300 p-4 bg-white space-y-2">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-medium text-gray-700">Prompt</h2>
-                <button 
-                  onClick={handleGenerate}
-                  className="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 disabled:opacity-50"
-                  disabled={selectedPaths.size === 0 || !prompt.trim()}
+          {/* Existing sidebar content */}
+          <div className="p-4">
+            {/* Explorer Header */}
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Explorer
+              </h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowPromptModal(true)}
+                  className="p-1 hover:bg-gray-200 rounded text-gray-600"
+                  title="New Prompt"
                 >
-                  Generate
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                          d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => setShowCreateForm(true)}
+                  className="p-1 hover:bg-gray-200 rounded text-gray-600"
+                  title="New File"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
                 </button>
               </div>
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-300 rounded p-2 text-sm text-gray-800 focus:ring-blue-500 focus:border-blue-500"
-                rows={3}
-                placeholder="Write your prompt here..."
-              />
             </div>
 
-            {/* Selected Files */}
-            <div className="flex-1 overflow-auto">
-              {selectedPaths.size > 0 && (
-                <div className="p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-gray-500">Selected Files</h3>
-                    <div className="flex items-center gap-4">
-                      <label className="flex items-center gap-2 text-sm text-gray-600">
-                        <input
-                          type="checkbox"
-                          checked={includeContents}
-                          onChange={(e) => setIncludeContents(e.target.checked)}
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        Include file contents
-                      </label>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleExport(false)}
-                          disabled={isExporting}
-                          className="px-3 py-1.5 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 flex items-center gap-2 disabled:opacity-50"
-                        >
-                          {isExporting ? (
-                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                            </svg>
-                          ) : (
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                            </svg>
-                          )}
-                          Copy Markdown
-                        </button>
-                        <button
-                          onClick={() => handleExport(true)}
-                          disabled={isExporting}
-                          className="px-3 py-1.5 bg-green-500 text-white text-sm rounded hover:bg-green-600 focus:ring-2 focus:ring-green-500 focus:ring-offset-2 flex items-center gap-2 disabled:opacity-50"
-                        >
-                          {isExporting ? (
-                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                            </svg>
-                          ) : (
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                          )}
-                          Download .md
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {Array.from(selectedPaths).map(path => {
-                      const entry = findEntry(path, files);
-                      return (
-                        <div key={path} className="bg-white border rounded-lg px-3 py-1.5 flex items-center gap-2 shadow-sm group">
-                          <span className="text-sm text-gray-700 truncate max-w-xs">{path}</span>
-                          {entry?.tokens !== undefined && (
-                            <span className="text-xs text-gray-400 shrink-0">
-                              {entry.tokens.toLocaleString()} tokens
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+            {/* FileTree Component */}
+            <FileTree
+              items={files}
+              onToggleSelect={handleToggleSelect}
+              selectedPaths={selectedPaths}
+              expandedPaths={expandedPaths}
+              onToggleExpand={handleToggleExpand}
+            />
+
+            {/* Prompts List */}
+            <div className="mt-8">
+              {promptsError ? (
+                <div className="text-sm text-red-500">
+                  Error loading prompts: {promptsError}
                 </div>
+              ) : (
+                <>
+                  <PromptSection
+                    title="Prompts"
+                    prompts={promptsList.filter(p => !p.prompt || p.prompt === 'prompt')}
+                    selectedId={selectedPromptId}
+                    onSelect={handlePromptSelect}
+                    onNewPrompt={() => setShowPromptModal(true)}
+                  />
+                  <PromptSection
+                    title="PRD"
+                    prompts={promptsList.filter(p => p.prompt === 'prd')}
+                    selectedId={selectedPromptId}
+                    onSelect={handlePromptSelect}
+                  />
+                  <PromptSection
+                    title="Instructions"
+                    prompts={promptsList.filter(p => p.prompt === 'instructions')}
+                    selectedId={selectedPromptId}
+                    onSelect={handlePromptSelect}
+                  />
+                  <PromptSection
+                    title="Examples"
+                    prompts={promptsList.filter(p => p.prompt === 'example')}
+                    selectedId={selectedPromptId}
+                    onSelect={handlePromptSelect}
+                  />
+                </>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Resize handle */}
+        <div
+          onMouseDown={handleMouseDownResize}
+          className="w-1 hover:w-2 bg-transparent hover:bg-blue-500/10 cursor-col-resize flex-shrink-0 transition-all"
+          title="Drag to resize"
+        />
+
+        {/* Main content area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Prompt Area */}
+          <div className="border-b border-gray-300 p-4 bg-white space-y-2">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-medium text-gray-700">Prompt</h2>
+              <button 
+                onClick={handleGenerate}
+                className="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 disabled:opacity-50"
+                disabled={selectedPaths.size === 0 || !prompt.trim()}
+              >
+                Generate
+              </button>
+            </div>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              className="w-full bg-gray-50 border border-gray-300 rounded p-2 text-sm text-gray-800 focus:ring-blue-500 focus:border-blue-500"
+              rows={3}
+              placeholder="Write your prompt here..."
+            />
+          </div>
+
+          {/* Selected Files */}
+          <div className="flex-1 overflow-auto">
+            {selectedPaths.size > 0 && (
+              <div className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-gray-500">Selected Files</h3>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-sm text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={includeContents}
+                        onChange={(e) => setIncludeContents(e.target.checked)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Include file contents
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleExport(false)}
+                        disabled={isExporting}
+                        className="px-3 py-1.5 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {isExporting ? (
+                          <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                          </svg>
+                        )}
+                        Copy Markdown
+                      </button>
+                      <button
+                        onClick={() => handleExport(true)}
+                        disabled={isExporting}
+                        className="px-3 py-1.5 bg-green-500 text-white text-sm rounded hover:bg-green-600 focus:ring-2 focus:ring-green-500 focus:ring-offset-2 flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {isExporting ? (
+                          <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                        )}
+                        Download .md
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedFilePaths.map(path => {
+                    const entry = findEntry(path, files);
+                    return (
+                      <div key={path} className="bg-white border rounded-lg px-3 py-1.5 flex items-center gap-2 shadow-sm">
+                        <span className="text-sm text-gray-700 truncate max-w-xs">{path}</span>
+                        {entry?.tokens !== undefined && (
+                          <span className="text-xs text-gray-400 shrink-0">
+                            {entry.tokens.toLocaleString()} tokens
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
