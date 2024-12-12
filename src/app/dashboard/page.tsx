@@ -57,85 +57,31 @@ function generateMarkdown(
   userPrompt?: string
 ): string {
   const now = new Date().toLocaleString();
-  const lines: string[] = [];
+  let markdown = `# Code Review - ${now}\n\n`;
 
-  // Add user's prompt text first if provided
-  if (userPrompt?.trim()) {
-    lines.push(
-      '# Prompt',
-      '',
-      userPrompt.trim(),
-      '',
-      '---',
-      ''
-    );
+  if (userPrompt) {
+    markdown += `## User Prompt\n${userPrompt}\n\n`;
   }
 
-  // Add file statistics
-  lines.push(
-    `# Selected Files (${now})`,
-    '',
-    `Total files: ${selectedPaths.size}  `,
-    `Total tokens: ${totalTokens.toLocaleString()}`,
-    '',
-    '| File Path | Type | Tokens |',
-    '|-----------|------|--------|',
-  );
+  markdown += `## Files Selected\n`;
+  markdown += `Total tokens: ${totalTokens.toLocaleString()}\n\n`;
 
-  // Add file table
-  Array.from(selectedPaths).forEach(path => {
+  const sortedPaths = Array.from(selectedPaths).sort();
+
+  for (const path of sortedPaths) {
+    const displayPath = path.replace(/^src\//, '').replace(/\.(tsx|ts|js|jsx)$/, '');
     const entry = findEntry(path, files);
+    
     if (entry) {
-      const type = entry.type === 'directory' ? 'Directory' : 'File';
-      const tokens = entry.tokens?.toLocaleString() || '0';
-      lines.push(`| ${path} | ${type} | ${tokens} |`);
+      markdown += `### ${displayPath}\n`;
+      if (fileContents?.[path]) {
+        const extension = path.split('.').pop() || '';
+        markdown += `\`\`\`${extension}\n${fileContents[path]}\n\`\`\`\n\n`;
+      }
     }
-  });
-
-  // Add file contents if provided
-  if (fileContents) {
-    lines.push('', '## File Contents', '');
-
-    // First add Supabase prompts
-    const promptPaths = Array.from(selectedPaths)
-      .filter(path => path.startsWith('prompts/') || path.startsWith('supabase/'));
-
-    promptPaths.forEach(path => {
-      const content = fileContents[path];
-      if (content) {
-        const lang = getLanguageFromPath(path);
-        lines.push(
-          `### ${path}`,
-          '',
-          '```' + (lang ? lang : ''),
-          content.trim(),
-          '```',
-          ''
-        );
-      }
-    });
-
-    // Then add other files
-    const otherPaths = Array.from(selectedPaths)
-      .filter(path => !path.startsWith('prompts/') && !path.startsWith('supabase/'));
-
-    otherPaths.forEach(path => {
-      const content = fileContents[path];
-      if (content) {
-        const lang = getLanguageFromPath(path);
-        lines.push(
-          `### ${path}`,
-          '',
-          '```' + (lang ? lang : ''),
-          content.trim(),
-          '```',
-          ''
-        );
-      }
-    });
   }
 
-  return lines.join('\n');
+  return markdown;
 }
 
 export default function DashboardPage() {
@@ -288,49 +234,53 @@ export default function DashboardPage() {
   }, []);
 
   const handleExport = async (download = false) => {
-    setIsExporting(true);
-    try {
-      let md: string;
-      
-      if (includeContents) {
-        // Get only file paths (not directories)
-        const filePaths = Array.from(selectedPaths).filter(path => {
-          const entry = findEntry(path, files);
-          return entry?.type === 'file';
-        });
+    if (selectedPaths.size === 0) return;
 
-        // Fetch contents
+    try {
+      setIsExporting(true);
+      const filePaths = Array.from(selectedPaths);
+      let fileContents = {};
+
+      if (includeContents) {
         const response = await fetch('/api/file-contents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paths: filePaths }),
+          body: JSON.stringify({ 
+            paths: filePaths,
+            owner: repoOwner.trim(),
+            repo: repoName.trim()
+          })
         });
 
         if (!response.ok) throw new Error('Failed to fetch file contents');
-        const contents = await response.json();
-
-        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens, contents, prompt);
-      } else {
-        md = generateMarkdown(selectedPaths, files, findEntry, totalTokens, undefined, prompt);
+        fileContents = await response.json();
       }
 
+      const markdown = generateMarkdown(
+        selectedPaths,
+        files,
+        findEntry,
+        totalTokens,
+        includeContents ? fileContents : undefined,
+        prompt
+      );
+
       if (download) {
-        const blob = new Blob([md], { type: 'text/markdown' });
+        const blob = new Blob([markdown], { type: 'text/markdown' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `files-${new Date().toISOString().split('T')[0]}.md`;
+        a.download = `code-review-${new Date().toISOString().split('T')[0]}.md`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } else {
-        await navigator.clipboard.writeText(md);
-        alert('Markdown copied to clipboard!');
+        await navigator.clipboard.writeText(markdown);
       }
     } catch (error) {
-      console.error('Export failed:', error);
-      alert('Failed to export files');
+      console.error('Error exporting:', error);
+      setError(error instanceof Error ? error.message : 'Failed to export');
     } finally {
       setIsExporting(false);
     }
@@ -552,8 +502,6 @@ export default function DashboardPage() {
     }
 
     setIsRepoLoading(true);
-    setError(null);
-    
     try {
       const response = await fetch(
         `https://api.github.com/users/${repoOwner.trim()}/repos?per_page=100`,
@@ -584,6 +532,46 @@ export default function DashboardPage() {
       setIsRepoLoading(false);
     }
   }, [repoOwner]);
+
+  // Add handleGenerate function
+  const handleGenerate = async () => {
+    if (!prompt.trim() || selectedPaths.size === 0) return;
+
+    try {
+      // First fetch contents for selected files
+      const response = await fetch('/api/file-contents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          paths: Array.from(selectedPaths),
+          owner: repoOwner,
+          repo: repoName
+        })
+      });
+
+      const fileContents = await response.json();
+
+      // Then send to AI chat with contents included
+      const selectedFiles = Array.from(selectedPaths).map(path => ({
+        path,
+        content: fileContents[path] || '',
+        tokens: files.find(f => f.path === path)?.tokens || 0
+      }));
+
+      const aiResponse = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, files: selectedFiles })
+      });
+
+      if (!aiResponse.ok) throw new Error('Failed to generate response');
+      const data = await aiResponse.json();
+      console.log('AI Response:', data);
+    } catch (error) {
+      console.error('Error generating response:', error);
+      setError(error instanceof Error ? error.message : 'Failed to generate response');
+    }
+  };
 
   if (loading) {
     console.log('Loading is true, showing loading state...');
@@ -895,8 +883,9 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-medium text-gray-700">Prompt</h2>
                 <button 
+                  onClick={handleGenerate}
                   className="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 disabled:opacity-50"
-                  disabled={selectedPaths.size === 0}
+                  disabled={selectedPaths.size === 0 || !prompt.trim()}
                 >
                   Generate
                 </button>
