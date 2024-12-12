@@ -85,7 +85,7 @@ function generateMarkdown(
   return markdown;
 }
 
-// Add XML generation function
+// Update XML generation function with CDATA sections
 function generateXMLPrompt(
   selectedPaths: Set<string>,
   files: FileEntry[],
@@ -122,19 +122,21 @@ function generateXMLPrompt(
     }
   });
 
-  // Generate XML for files in a section
+  // Generate XML for files in a section using CDATA
   function filesToXML(paths: string[]): string {
     return paths.map(path => {
       const content = fileContents?.[path] || '';
       const ext = path.split('.').pop() || '';
-      return `  <file name="${path}" type="${ext}">\n    ${content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}\n  </file>`;
+      return `  <file name="${path}" type="${ext}">
+    <![CDATA[${content}]]>
+  </file>`;
     }).join('\n');
   }
 
-  // Build the final XML
+  // Build the final XML with CDATA for user prompt
   return `<?xml version="1.0" encoding="UTF-8"?>
 <prompt>
-  <purpose>${userPrompt.trim().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</purpose>
+  <purpose><![CDATA[${userPrompt.trim()}]]></purpose>
   <instructions>
 ${filesToXML(sections.instructions)}
   </instructions>

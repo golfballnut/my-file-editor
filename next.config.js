@@ -2,8 +2,10 @@
 const nextConfig = {
   output: 'standalone',
   experimental: {
-    serverActions: true,
-  },
+    serverActions: {
+      allowedOrigins: ['localhost:3000']
+    }
+  }
 }
 
 module.exports = nextConfig 
