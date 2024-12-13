@@ -96,18 +96,22 @@ async function fetchGitHubContents(
   console.log(`Fetching contents for: ${path || 'root'}`);
   
   const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-  const headers: Record<string, string> = {
+  const headers: HeadersInit = {
     'Accept': 'application/vnd.github.v3+json',
-    'User-Agent': 'NextJS-File-Editor'
+    'Authorization': `token ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`,
+    'User-Agent': 'NextJS-App'
   };
-  
-  if (process.env.GITHUB_TOKEN) {
-    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
-  }
 
   const response = await fetch(url, { headers });
 
   if (!response.ok) {
+    const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
+    const resetTime = response.headers.get('x-ratelimit-reset');
+    console.error('GitHub API Headers:', {
+      rateLimitRemaining,
+      resetTime,
+      status: response.status
+    });
     throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
   }
 

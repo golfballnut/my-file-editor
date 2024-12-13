@@ -651,43 +651,41 @@ export default function DashboardPage() {
   }, [fetchPrompts]);
 
   // Add fetchPublicRepos function
-  const fetchPublicRepos = useCallback(async () => {
-    if (!repoOwner.trim()) {
-      setError('Repository owner is required');
-      return;
-    }
-
+  const fetchPublicRepos = useCallback(async (username: string) => {
     setIsRepoLoading(true);
+    setError(null);
+    
     try {
-      const response = await fetch(
-        `https://api.github.com/users/${repoOwner.trim()}/repos?per_page=100`,
-        {
-          headers: {
-            'Accept': 'application/vnd.github.v3+json',
-            ...(process.env.NEXT_PUBLIC_GITHUB_TOKEN && {
-              'Authorization': `Bearer ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`
-            })
-          }
-        }
-      );
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch repositories for ${repoOwner.trim()}`);
+      const headers: HeadersInit = {
+        'Accept': 'application/vnd.github.v3+json',
+      };
+
+      // Add GitHub token if available
+      if (process.env.NEXT_PUBLIC_GITHUB_TOKEN) {
+        headers.Authorization = `token ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`;
       }
-      
-      const data = await response.json();
-      setPublicRepos(data.map((repo: any) => ({
+
+      const response = await fetch(
+        `https://api.github.com/users/${username}/repos?per_page=100`,
+        { headers }
+      );
+
+      if (!response.ok) {
+        throw new Error(`GitHub API responded with status ${response.status}`);
+      }
+
+      const repos = await response.json();
+      setPublicRepos(repos.map((repo: any) => ({
         name: repo.name,
         description: repo.description
       })));
-    } catch (err) {
-      console.error('Error fetching repos:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load repositories');
-      setPublicRepos([]);
+    } catch (error) {
+      console.error('Error fetching repos:', error);
+      setError(`Failed to fetch repositories for ${username}`);
     } finally {
       setIsRepoLoading(false);
     }
-  }, [repoOwner]);
+  }, []);
 
   // Add handleGenerate function
   const handleGenerate = async () => {
@@ -899,7 +897,7 @@ export default function DashboardPage() {
                       className="flex-1 px-3 py-1.5 text-sm border rounded-md focus:ring-1 focus:ring-blue-500"
                     />
                     <button
-                      onClick={fetchPublicRepos}
+                      onClick={() => fetchPublicRepos(repoOwner.trim())}
                       disabled={isRepoLoading || !repoOwner.trim()}
                       className={`px-3 py-1.5 text-sm font-medium rounded-md flex items-center gap-2
                         ${isRepoLoading || !repoOwner.trim()
@@ -1105,7 +1103,7 @@ export default function DashboardPage() {
                         {isExporting ? (
                           <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                           </svg>
                         ) : (
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
