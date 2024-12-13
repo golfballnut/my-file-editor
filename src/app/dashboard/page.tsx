@@ -108,10 +108,8 @@ function generateXMLPrompt(
     return paths.map(path => {
       const content = fileContents[path] || '';
       const ext = path.split('.').pop() || '';
-      // Escape any nested CDATA sections in the content
-      const escapedContent = content.replace(/]]>/g, ']]]]><![CDATA[>');
       return `    <file name="${path}" type="${ext}">
-      <![CDATA[${escapedContent}]]>
+      ${content}
     </file>`;
     }).join('\n');
   }
@@ -135,12 +133,8 @@ function generateXMLPrompt(
     }
   });
 
-  // Escape any nested CDATA sections in the user prompt
-  const escapedPrompt = userPrompt.trim().replace(/]]>/g, ']]]]><![CDATA[>');
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<prompt>
-  <purpose><![CDATA[${escapedPrompt}]]></purpose>
+  return `<prompt>
+  <purpose>${userPrompt.trim()}</purpose>
   <instructions>
 ${filesToXML(sections.instructions)}
   </instructions>
@@ -154,6 +148,152 @@ ${filesToXML(sections.codebase)}
 ${filesToXML(sections.example)}
   </examples>
 </prompt>`;
+}
+
+// Add a function to count tokens in the prompt text
+function countPromptTokens(text: string): number {
+  if (!text) return 0;
+  // Simple word-based token counting for now
+  return text.trim().split(/\s+/).filter(token => token.length > 0).length;
+}
+
+// 1. First define the FileTreeItem props type
+type FileTreeItemProps = {
+  item: FileEntry;
+  level: number;
+  selectedPaths: Set<string>;
+  expandedPaths: Set<string>;
+  onSelect: (path: string) => void;
+  onToggleExpand: (path: string) => void;
+};
+
+// 2. Define the FileTreeItem component
+function FileTreeItem({ 
+  item, 
+  level = 0, 
+  selectedPaths, 
+  expandedPaths,
+  onSelect,
+  onToggleExpand 
+}: FileTreeItemProps) {
+  const isDirectory = 'children' in item;
+  const isExpanded = expandedPaths.has(item.path);
+  const isSelected = selectedPaths.has(item.path);
+
+  const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    e.stopPropagation();
+    if (isDirectory) {
+      // If it's a directory, select/deselect all children
+      const allChildPaths = getAllChildPaths(item);
+      allChildPaths.forEach(path => {
+        onSelect(path);
+      });
+    } else {
+      onSelect(item.path);
+    }
+  };
+
+  // Helper function to get all child file paths in a directory
+  const getAllChildPaths = (item: FileEntry): string[] => {
+    if (!('children' in item)) {
+      return [item.path];
+    }
+    return [
+      item.path,
+      ...(item.children?.flatMap(child => getAllChildPaths(child)) || [])
+    ];
+  };
+
+  return (
+    <div>
+      <div
+        className={`flex items-center py-1 px-2 hover:bg-gray-100 cursor-pointer text-sm
+          ${isSelected ? 'bg-blue-50' : ''}`}
+        style={{ paddingLeft: `${level * 16}px` }}
+      >
+        <div className="flex items-center gap-2">
+          {isDirectory ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleExpand(item.path);
+              }}
+              className="p-1 hover:bg-gray-200 rounded"
+            >
+              <svg
+                className={`w-4 h-4 transform transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          ) : (
+            <span className="w-6" />
+          )}
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={handleCheckboxChange}
+            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="flex items-center gap-1">
+            {isDirectory ? (
+              <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            )}
+            {item.name}
+          </span>
+          {item.tokens && (
+            <span className="ml-2 text-xs text-gray-500">{item.tokens}</span>
+          )}
+        </div>
+      </div>
+      {isDirectory && isExpanded && item.children?.map((child) => (
+        <FileTreeItem
+          key={child.path}
+          item={child}
+          level={level + 1}
+          selectedPaths={selectedPaths}
+          expandedPaths={expandedPaths}
+          onSelect={onSelect}
+          onToggleExpand={onToggleExpand}
+        />
+      ))}
+    </div>
+  );
+}
+
+// 3. Then define the FileTree component
+function FileTree({ 
+  items, 
+  onToggleSelect, 
+  selectedPaths, 
+  expandedPaths, 
+  onToggleExpand, 
+  level = 0 
+}: FileTreeProps) {
+  return (
+    <div className="flex flex-col">
+      {items.map((item) => (
+        <FileTreeItem
+          key={item.path}
+          item={item}
+          level={level}
+          selectedPaths={selectedPaths}
+          expandedPaths={expandedPaths}
+          onSelect={(path) => onToggleSelect(path, !selectedPaths.has(path), item)}
+          onToggleExpand={onToggleExpand}
+        />
+      ))}
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -539,101 +679,6 @@ export default function DashboardPage() {
       alert(error instanceof Error ? error.message : 'Failed to create prompt');
     }
   }
-
-  const FileTree = useCallback(({ 
-    items, 
-    onToggleSelect, 
-    selectedPaths, 
-    expandedPaths,
-    onToggleExpand,
-    level = 0 
-  }: FileTreeProps) => {
-    return (
-      <ul className={`${level === 0 ? 'pl-0' : 'pl-4'} space-y-0.5`}>
-        {items.map((item) => (
-          <li key={item.path} className="py-0.5">
-            <div className="group flex items-center gap-1 hover:bg-gray-100 rounded px-1 py-0.5">
-              {item.type === 'directory' && (
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleExpand(item.path);
-                  }}
-                  className="p-0.5 hover:bg-gray-200 rounded focus:outline-none"
-                >
-                  <svg 
-                    className={`w-3 h-3 text-gray-500 transform transition-transform ${
-                      expandedPaths.has(item.path) ? 'rotate-90' : ''
-                    }`}
-                    fill="none" 
-                    stroke="currentColor" 
-                    viewBox="0 0 24 24"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
-              )}
-              <input
-                type="checkbox"
-                checked={selectedPaths.has(item.path)}
-                onChange={(e) => {
-                  if (item.type === 'directory') {
-                    handleSelectDirectory(item, e.target.checked);
-                  } else {
-                    onToggleSelect(item.path, e.target.checked, item);
-                  }
-                }}
-                className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              {item.type === 'directory' ? (
-                <div className="flex-1">
-                  <span className="flex items-center gap-1.5 text-sm">
-                    <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                    </svg>
-                    <span className="text-gray-700">{item.name}</span>
-                    {item.tokens !== undefined && (
-                      <span className="text-xs text-gray-400 ml-auto flex items-center gap-1">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 11.172V6a3 3 0 013-3z" />
-                        </svg>
-                        {item.tokens.toLocaleString()}
-                      </span>
-                    )}
-                  </span>
-                  {expandedPaths.has(item.path) && item.children && (
-                    <FileTree
-                      items={item.children}
-                      onToggleSelect={onToggleSelect}
-                      selectedPaths={selectedPaths}
-                      expandedPaths={expandedPaths}
-                      onToggleExpand={onToggleExpand}
-                      level={level + 1}
-                    />
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center gap-1.5 text-sm flex-1">
-                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  <span className="text-gray-700">{item.name}</span>
-                  {item.tokens !== undefined && (
-                    <span className="text-xs text-gray-400 ml-auto flex items-center gap-1">
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 11.172V6a3 3 0 013-3z" />
-                      </svg>
-                      {item.tokens.toLocaleString()}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          </li>
-        ))}
-      </ul>
-    );
-  }, [handleSelectDirectory]);
 
   // Add fetchPrompts function
   const fetchPrompts = useCallback(async () => {
@@ -1133,13 +1178,18 @@ export default function DashboardPage() {
           <div className="border-b border-gray-300 p-4 bg-white space-y-2">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-medium text-gray-700">Prompt</h2>
-              <button 
-                onClick={handleGenerate}
-                className="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 disabled:opacity-50"
-                disabled={selectedPaths.size === 0 || !prompt.trim()}
-              >
-                Generate
-              </button>
+              <div className="flex items-center gap-4">
+                <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600">
+                  {countPromptTokens(prompt)} tokens
+                </span>
+                <button 
+                  onClick={handleGenerate}
+                  className="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 disabled:opacity-50"
+                  disabled={selectedPaths.size === 0 || !prompt.trim()}
+                >
+                  Generate
+                </button>
+              </div>
             </div>
             <textarea
               value={prompt}
