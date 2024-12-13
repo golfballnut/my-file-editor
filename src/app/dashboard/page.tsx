@@ -89,7 +89,7 @@ function generateMarkdown(
 function generateXMLPrompt(
   selectedPaths: Set<string>,
   files: FileEntry[],
-  fileContents: Record<string, string> | undefined,
+  fileContents: Record<string, string>,
   promptsList: Prompt[],
   userPrompt: string
 ): string {
@@ -101,7 +101,22 @@ function generateXMLPrompt(
     }
   });
 
-  // Categorize selected paths
+  // Generate XML for files in a section
+  function filesToXML(paths: string[]): string {
+    if (paths.length === 0) return '';
+    
+    return paths.map(path => {
+      const content = fileContents[path] || '';
+      const ext = path.split('.').pop() || '';
+      // Escape any nested CDATA sections in the content
+      const escapedContent = content.replace(/]]>/g, ']]]]><![CDATA[>');
+      return `    <file name="${path}" type="${ext}">
+      <![CDATA[${escapedContent}]]>
+    </file>`;
+    }).join('\n');
+  }
+
+  // Sort files into sections
   const sections = {
     prompt: [] as string[],
     prd: [] as string[],
@@ -110,11 +125,9 @@ function generateXMLPrompt(
     codebase: [] as string[]
   };
 
-  // Sort files into sections
   Array.from(selectedPaths).forEach(path => {
     const filename = path.split('/').pop() || path;
     const category = promptMap.get(filename);
-    
     if (category && category in sections) {
       sections[category as keyof typeof sections].push(path);
     } else {
@@ -122,21 +135,12 @@ function generateXMLPrompt(
     }
   });
 
-  // Generate XML for files in a section using CDATA
-  function filesToXML(paths: string[]): string {
-    return paths.map(path => {
-      const content = fileContents?.[path] || '';
-      const ext = path.split('.').pop() || '';
-      return `  <file name="${path}" type="${ext}">
-    <![CDATA[${content}]]>
-  </file>`;
-    }).join('\n');
-  }
+  // Escape any nested CDATA sections in the user prompt
+  const escapedPrompt = userPrompt.trim().replace(/]]>/g, ']]]]><![CDATA[>');
 
-  // Build the final XML with CDATA for user prompt
   return `<?xml version="1.0" encoding="UTF-8"?>
 <prompt>
-  <purpose><![CDATA[${userPrompt.trim()}]]></purpose>
+  <purpose><![CDATA[${escapedPrompt}]]></purpose>
   <instructions>
 ${filesToXML(sections.instructions)}
   </instructions>
@@ -181,6 +185,7 @@ export default function DashboardPage() {
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const isResizingRef = useRef(false);
   const startXRef = useRef(0);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   // Add resize effect
   useEffect(() => {
@@ -803,6 +808,73 @@ export default function DashboardPage() {
     </div>
   );
 
+  // Update the copy to clipboard handler
+  const handleCopyToClipboard = useCallback(async () => {
+    const addLog = (msg: string) => {
+      console.log(msg);
+      setDebugLogs(prev => [...prev, msg]);
+    };
+
+    try {
+      setIsExporting(true);
+      const selectedPathsArray = Array.from(selectedPaths);
+      addLog(`Starting copy process with ${selectedPathsArray.length} files`);
+
+      // Get repo info from state or props
+      const currentRepoOwner = repoOwner || 'golfballnut';
+      const currentRepoName = repoName || 'agenthub';
+
+      addLog(`Using repo: ${currentRepoOwner}/${currentRepoName}`);
+
+      // First fetch contents for selected files
+      const requestBody = {
+        paths: selectedPathsArray,
+        owner: currentRepoOwner,
+        repo: currentRepoName,
+        branch: 'main'
+      };
+
+      addLog('Sending API request...');
+      const response = await fetch('/api/file-contents', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      addLog(`API response status: ${response.status}`);
+      const responseData = await response.json();
+
+      if (!response.ok) {
+        throw new Error(responseData.error || `API error: ${response.status}`);
+      }
+
+      const fileContents = responseData as Record<string, string>;
+      addLog(`Received contents for ${Object.keys(fileContents).length} files`);
+
+      // Generate XML with the fetched contents
+      const xmlContent = generateXMLPrompt(
+        selectedPaths,
+        files,
+        fileContents,
+        promptsList,
+        prompt || ''
+      );
+
+      await navigator.clipboard.writeText(xmlContent);
+      addLog('Content copied to clipboard successfully');
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      addLog(`Error: ${errorMessage}`);
+      setError(errorMessage);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [selectedPaths, files, promptsList, prompt, repoOwner, repoName]);
+
   if (loading) {
     console.log('Loading is true, showing loading state...');
     return (
@@ -1096,7 +1168,7 @@ export default function DashboardPage() {
                     </label>
                     <div className="flex gap-2">
                       <button
-                        onClick={() => handleExport(false)}
+                        onClick={handleCopyToClipboard}
                         disabled={isExporting}
                         className="px-3 py-1.5 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 flex items-center gap-2 disabled:opacity-50"
                       >
@@ -1233,6 +1305,18 @@ Write your markdown here..."
                 Create Prompt
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Debug Panel */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="fixed bottom-4 right-4 max-w-md bg-white p-4 rounded-lg shadow-lg border border-gray-200 overflow-auto max-h-60">
+          <h4 className="font-medium text-sm mb-2">Debug Logs</h4>
+          <div className="space-y-1 text-xs">
+            {debugLogs.map((log, i) => (
+              <div key={i} className="text-gray-600">{log}</div>
+            ))}
           </div>
         </div>
       )}

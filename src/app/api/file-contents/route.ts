@@ -50,15 +50,15 @@ async function fetchFileContent(
     'User-Agent': 'NextJS-File-Editor'
   };
   
-  if (process.env.GITHUB_TOKEN) {
-    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (process.env.NEXT_PUBLIC_GITHUB_TOKEN) {
+    headers['Authorization'] = `token ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`;
   }
 
   const response = await fetch(url, { headers });
   
   if (!response.ok) {
     console.error(`Failed to fetch ${path}: ${response.statusText}`);
-    return '';
+    throw new Error(`Failed to fetch ${path}: ${response.statusText}`);
   }
 
   return response.text();
@@ -78,21 +78,42 @@ export async function POST(request: Request) {
 
     const contents: Record<string, string> = {};
 
-    await Promise.all(
+    // Use Promise.all but handle individual file failures
+    const results = await Promise.allSettled(
       paths.map(async (path) => {
         try {
-          contents[path] = await fetchFileContent(
+          const content = await fetchFileContent(
             repoOwner || process.env.GITHUB_OWNER!,
             repoName || process.env.GITHUB_REPO!,
             path,
             repoBranch
           );
+          console.log(`Successfully fetched content for ${path}`);
+          return { path, content };
         } catch (error) {
           console.error(`Error fetching ${path}:`, error);
-          contents[path] = '';
+          throw error;
         }
       })
     );
+
+    // Process results and collect any errors
+    const errors: string[] = [];
+    results.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        contents[result.value.path] = result.value.content;
+      } else {
+        errors.push(`Failed to fetch ${result.reason}`);
+      }
+    });
+
+    if (errors.length > 0) {
+      console.error('Errors fetching files:', errors);
+      return NextResponse.json(
+        { error: 'Failed to fetch some files', errors },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(contents);
   } catch (error) {
