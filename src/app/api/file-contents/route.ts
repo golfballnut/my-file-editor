@@ -29,7 +29,7 @@ async function fetchFileContent(
   owner: string,
   repo: string,
   path: string,
-  branch: string = 'main'
+  token: string
 ): Promise<string> {
   console.log('Fetching content for:', path);
 
@@ -44,18 +44,16 @@ async function fetchFileContent(
   }
 
   // Handle GitHub files
-  const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
-  const headers: Record<string, string> = {
-    'Accept': 'application/vnd.github.v3.raw',
-    'User-Agent': 'NextJS-File-Editor'
-  };
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
   
-  if (process.env.NEXT_PUBLIC_GITHUB_TOKEN) {
-    headers['Authorization'] = `token ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`;
-  }
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github.v3.raw',
+      'X-GitHub-Api-Version': '2022-11-28'
+    }
+  });
 
-  const response = await fetch(url, { headers });
-  
   if (!response.ok) {
     console.error(`Failed to fetch ${path}: ${response.statusText}`);
     throw new Error(`Failed to fetch ${path}: ${response.statusText}`);
@@ -66,51 +64,40 @@ async function fetchFileContent(
 
 export async function POST(request: Request) {
   try {
-    const { paths, owner: repoOwner, repo: repoName, branch: repoBranch } = 
-      await request.json() as RequestBody;
-
-    if (!paths || !Array.isArray(paths)) {
+    const { paths, owner: repoOwner, repo: repoName } = await request.json();
+    
+    if (!Array.isArray(paths)) {
       return NextResponse.json(
-        { error: 'Paths array is required' },
+        { error: 'Paths must be an array' },
         { status: 400 }
       );
     }
 
-    const contents: Record<string, string> = {};
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return NextResponse.json(
+        { error: 'GitHub token not configured' },
+        { status: 500 }
+      );
+    }
 
-    // Use Promise.all but handle individual file failures
-    const results = await Promise.allSettled(
+    const contents: Record<string, string> = {};
+    const errors: string[] = [];
+
+    await Promise.all(
       paths.map(async (path) => {
         try {
-          const content = await fetchFileContent(
-            repoOwner || process.env.GITHUB_OWNER!,
-            repoName || process.env.GITHUB_REPO!,
-            path,
-            repoBranch
-          );
-          console.log(`Successfully fetched content for ${path}`);
-          return { path, content };
+          contents[path] = await fetchFileContent(repoOwner, repoName, path, token);
         } catch (error) {
-          console.error(`Error fetching ${path}:`, error);
-          throw error;
+          errors.push(`Failed to fetch ${error instanceof Error ? error.message : 'unknown error'}`);
         }
       })
     );
 
-    // Process results and collect any errors
-    const errors: string[] = [];
-    results.forEach((result) => {
-      if (result.status === 'fulfilled') {
-        contents[result.value.path] = result.value.content;
-      } else {
-        errors.push(`Failed to fetch ${result.reason}`);
-      }
-    });
-
     if (errors.length > 0) {
       console.error('Errors fetching files:', errors);
       return NextResponse.json(
-        { error: 'Failed to fetch some files', errors },
+        { error: 'Some files failed to fetch', errors },
         { status: 500 }
       );
     }
@@ -119,7 +106,7 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error('Error processing request:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch file contents' },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }
